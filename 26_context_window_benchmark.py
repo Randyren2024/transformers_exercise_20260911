@@ -18,10 +18,6 @@ import torch.nn.functional as F
 #   3. Approximate attention-score memory
 #   4. Forward-pass timing on CPU
 #   5. Scaling relative to sequence length
-#
-# Important:
-#   Full self-attention creates a T x T attention-score matrix,
-#   so attention-score work scales approximately with T^2.
 # ============================================================
 
 SEED = 42
@@ -30,7 +26,6 @@ torch.manual_seed(SEED)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Device: {DEVICE}")
 
-# Keep model dimensions fixed so only sequence length changes.
 d_model = 64
 heads = 4
 ffn_dim = 256
@@ -96,14 +91,15 @@ class TinyContextModel(nn.Module):
         B, T = idx.shape
         positions = torch.arange(T, device=idx.device)
         x = self.token_embedding(idx) + self.position_embedding(positions)[None, :, :]
-        x = x + self.attn(self.ln1(x), return_attention=return_attention)[0] if return_attention else x + self.attn(self.ln1(x))
+
         if return_attention:
-            # Recompute the attention output cleanly while keeping the attention map.
             attn_out, weights = self.attn(self.ln1(x), return_attention=True)
             x = x + attn_out
             x = x + self.ffn(self.ln2(x))
             logits = self.lm_head(x)
             return logits, weights
+
+        x = x + self.attn(self.ln1(x))
         x = x + self.ffn(self.ln2(x))
         return self.lm_head(x)
 
@@ -175,9 +171,7 @@ for context in CONTEXTS:
 print("=" * 88)
 print("Scaling summary")
 print("=" * 88)
-print(
-    "context | attention elements | relative T^2 | score memory | forward time ms"
-)
+print("context | attention elements | relative T^2 | score memory | forward time ms")
 print("--------+--------------------+--------------+--------------+-----------------")
 base = results[0]
 for r in results:
