@@ -13,32 +13,9 @@ import torch.nn.functional as F
 
 # ============================================================
 # Step 43: Colab T4 formal TinyGPT pretraining
-#
-# Goal:
-#   Train the already-validated 4.24M-parameter bilingual TinyGPT
-#   on the larger Step 42 token corpus.
-#
-# Design:
-#   vocab      = 8K
-#   d_model    = 192
-#   heads      = 6
-#   layers     = 6
-#   FFN        = 768
-#   context    = 256
-#   tied input/output embeddings
-#
-# This script is deliberately self-contained so it can run in
-# Google Colab after the repository is cloned or uploaded.
-# It uses CUDA automatically when available and AMP on CUDA.
-# It can also run on CPU for a smoke test.
-#
-# Important:
-#   Step 40/41 checkpoints are NOT loaded here. This is a clean
-#   formal pretraining baseline on the larger Step 42 corpus.
 # ============================================================
 
 SEED = 42
-
 REPO_ROOT = Path(__file__).resolve().parent
 TRAIN_IDS = REPO_ROOT / "data" / "step42_training_corpus" / "step42_train_ids.pt"
 VAL_IDS = REPO_ROOT / "data" / "step42_training_corpus" / "step42_validation_ids.pt"
@@ -54,7 +31,8 @@ N_LAYERS = 6
 D_FF = 768
 CONTEXT_LENGTH = 256
 DROPOUT = 0.0
-BATCH_SIZE = 64
+BATCH_SIZE_GPU = 64
+BATCH_SIZE_CPU = 8
 DEFAULT_STEPS = 5_000
 LEARNING_RATE = 3e-4
 MIN_LEARNING_RATE = 3e-5
@@ -86,10 +64,12 @@ class CausalSelfAttention(nn.Module):
         q = q.view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         k = k.view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
         v = v.view(batch, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
-
         if hasattr(F, "scaled_dot_product_attention"):
             y = F.scaled_dot_product_attention(
-                q, k, v, is_causal=True,
+                q,
+                k,
+                v,
+                is_causal=True,
                 dropout_p=self.dropout if self.training else 0.0,
             )
         else:
@@ -98,7 +78,6 @@ class CausalSelfAttention(nn.Module):
             scores = scores.masked_fill(~mask, float("-inf"))
             weights = torch.softmax(scores, dim=-1)
             y = weights @ v
-
         y = y.transpose(1, 2).contiguous().view(batch, seq_len, d_model)
         return self.out_proj(y)
 
@@ -125,14 +104,14 @@ class TransformerBlock(nn.Module):
 class TinyGPT(nn.Module):
     def __init__(self):
         super().__init__()
-        self.vocab_size = VOCAB_SIZE
-        self.context_length = CONTEXT_LENGTH
         self.token_embedding = nn.Embedding(VOCAB_SIZE, D_MODEL)
         self.position_embedding = nn.Embedding(CONTEXT_LENGTH, D_MODEL)
-        self.blocks = nn.ModuleList([
-            TransformerBlock(D_MODEL, N_HEADS, D_FF, CONTEXT_LENGTH, DROPOUT)
-            for _ in range(N_LAYERS)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                TransformerBlock(D_MODEL, N_HEADS, D_FF, CONTEXT_LENGTH, DROPOUT)
+                for _ in range(N_LAYERS)
+            ]
+        )
         self.ln_f = nn.LayerNorm(D_MODEL)
         self.lm_head = nn.Linear(D_MODEL, VOCAB_SIZE, bias=False)
         self.lm_head.weight = self.token_embedding.weight
@@ -148,7 +127,7 @@ class TinyGPT(nn.Module):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, input_ids, targets=None):
-        batch, seq_len = input_ids.shape
+        _, seq_len = input_ids.shape
         if seq_len > CONTEXT_LENGTH:
             raise ValueError("Sequence length exceeds context length")
         positions = torch.arange(seq_len, device=input_ids.device)
@@ -161,21 +140,6 @@ class TinyGPT(nn.Module):
             loss = F.cross_entropy(logits.reshape(-1, VOCAB_SIZE), targets.reshape(-1))
         return logits, loss
 
-    @torch.no_grad()
-    def generate(self, input_ids, max_new_tokens=80, temperature=0.8, top_k=40):
-        self.eval()
-        for _ in range(max_new_tokens):
-            x = input_ids[:, -CONTEXT_LENGTH:]
-            logits, _ = self(x)
-            logits = logits[:, -1, :] / max(temperature, 1e-5)
-            if top_k is not None:
-                values, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits = logits.masked_fill(logits < values[:, [-1]], float("-inf"))
-            probs = torch.softmax(logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
-            input_ids = torch.cat([input_ids, next_token], dim=1)
-        return input_ids
-
 
 def set_seed(seed):
     random.seed(seed)
@@ -187,21 +151,20 @@ def set_seed(seed):
 def get_batch(tokens, batch_size, device):
     max_start = len(tokens) - CONTEXT_LENGTH - 1
     starts = torch.randint(0, max_start + 1, (batch_size,))
-    x = torch.stack([tokens[int(start): int(start) + CONTEXT_LENGTH] for start in starts])
-    y = torch.stack([tokens[int(start) + 1: int(start) + CONTEXT_LENGTH + 1] for start in starts])
+    x = torch.stack([tokens[int(start) : int(start) + CONTEXT_LENGTH] for start in starts])
+    y = torch.stack([tokens[int(start) + 1 : int(start) + CONTEXT_LENGTH + 1] for start in starts])
     return x.to(device, non_blocking=True), y.to(device, non_blocking=True)
 
 
 @torch.no_grad()
-def estimate_loss(model, tokens, batch_size, device, batches=20, amp_enabled=False, amp_dtype=torch.float16):
+def estimate_loss(model, tokens, batch_size, device, batches, amp_enabled):
     model.eval()
     losses = []
     for _ in range(batches):
         x, y = get_batch(tokens, batch_size, device)
-        if amp_enabled:
-            with torch.autocast(device_type="cuda", dtype=amp_dtype):
-                _, loss = model(x, y)
-        else:
+        with torch.autocast(
+            device_type="cuda", dtype=torch.float16, enabled=amp_enabled
+        ):
             _, loss = model(x, y)
         losses.append(loss.item())
     model.train()
@@ -217,22 +180,20 @@ def current_lr(step, total_steps):
     return MIN_LEARNING_RATE + (LEARNING_RATE - MIN_LEARNING_RATE) * cosine
 
 
-def parameter_count(model):
-    return sum(p.numel() for p in model.parameters())
-
-
 def save_checkpoint(model, optimizer, scaler, step, train_loss, val_loss, tokens_seen, config):
-    checkpoint = {
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
-        "step": step,
-        "train_loss": train_loss,
-        "val_loss": val_loss,
-        "tokens_seen": tokens_seen,
-        "config": config,
-    }
-    torch.save(checkpoint, CHECKPOINT_PATH)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
+            "step": step,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "tokens_seen": tokens_seen,
+            "config": config,
+        },
+        CHECKPOINT_PATH,
+    )
 
 
 def main():
@@ -248,27 +209,26 @@ def main():
     if not TRAIN_IDS.exists() or not VAL_IDS.exists():
         print("Step 42 token files were not found.")
         print(f"Expected: {TRAIN_IDS}")
+        print("Run 42_build_training_corpus.py in the same Colab repository first.")
         sys.exit(1)
 
     train_tokens = torch.load(TRAIN_IDS, map_location="cpu")
     val_tokens = torch.load(VAL_IDS, map_location="cpu")
-    if train_tokens.dtype != torch.long or val_tokens.dtype != torch.long:
+    if train_tokens.dtype != torch.long:
         train_tokens = train_tokens.long()
+    if val_tokens.dtype != torch.long:
         val_tokens = val_tokens.long()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cuda_enabled = device.type == "cuda"
-    amp_enabled = cuda_enabled
-    amp_dtype = torch.float16
-
-    batch_size = args.batch_size
-    if batch_size is None:
-        batch_size = 64 if cuda_enabled else 8
+    batch_size = args.batch_size or (BATCH_SIZE_GPU if cuda_enabled else BATCH_SIZE_CPU)
+    scaler = torch.cuda.amp.GradScaler(enabled=cuda_enabled)
 
     model = TinyGPT().to(device)
-    params = parameter_count(model)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY, betas=(0.9, 0.95))
-    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+    params = sum(p.numel() for p in model.parameters())
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY, betas=(0.9, 0.95)
+    )
 
     print("=" * 112)
     print("Step 43: Colab T4 formal TinyGPT pretraining")
@@ -280,17 +240,20 @@ def main():
     if META_PATH.exists():
         meta = json.loads(META_PATH.read_text(encoding="utf-8"))
         print(f"Source chars:        {meta.get('total_chars', 'n/a')}")
+
     print("\nPart 2: Model / hardware")
     print("-" * 112)
     print(f"Parameters:          {params:,}")
     print(f"vocab:               {VOCAB_SIZE:,}")
-    print(f"d_model / heads:     {D_MODEL} / {N_HEADS}")
-    print(f"layers / FFN:        {N_LAYERS} / {D_FF}")
+    print(f"d_model:             {D_MODEL}")
+    print(f"heads:               {N_HEADS}")
+    print(f"layers:              {N_LAYERS}")
+    print(f"FFN:                 {D_FF}")
     print(f"context length:      {CONTEXT_LENGTH}")
     print(f"device:              {device}")
     if cuda_enabled:
         print(f"GPU:                 {torch.cuda.get_device_name(0)}")
-        print(f"mixed precision:     True (float16 autocast)")
+        print("mixed precision:     True (float16 autocast)")
     else:
         print("mixed precision:     False")
     print(f"training steps:      {args.steps:,}")
@@ -298,19 +261,19 @@ def main():
     print(f"effective tokens/step: {batch_size * CONTEXT_LENGTH:,}")
     print("checkpoint policy:   clean baseline; no Step 40/41 checkpoint loaded")
 
-    init_train = estimate_loss(model, train_tokens, batch_size, device, batches=5, amp_enabled=amp_enabled)
-    init_val = estimate_loss(model, val_tokens, batch_size, device, batches=5, amp_enabled=amp_enabled)
-    print(f"Initial train loss:  {init_train:.4f}")
-    print(f"Initial val loss:    {init_val:.4f}")
+    initial_train = estimate_loss(model, train_tokens, batch_size, device, 5, cuda_enabled)
+    initial_val = estimate_loss(model, val_tokens, batch_size, device, 5, cuda_enabled)
+    print(f"Initial train loss:  {initial_train:.4f}")
+    print(f"Initial val loss:    {initial_val:.4f}")
 
     print("\nPart 3: Formal pretraining")
     print("-" * 112)
     model.train()
     tokens_seen = 0
-    step_timer = time.perf_counter()
+    latest_train = initial_train
+    latest_val = initial_val
+    timer = time.perf_counter()
     last_log_step = 0
-    latest_train = init_train
-    latest_val = init_val
 
     for step in range(1, args.steps + 1):
         lr = current_lr(step, args.steps)
@@ -319,10 +282,8 @@ def main():
 
         x, y = get_batch(train_tokens, batch_size, device)
         optimizer.zero_grad(set_to_none=True)
-
-        with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp_enabled):
+        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=cuda_enabled):
             _, loss = model(x, y)
-
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
@@ -333,14 +294,19 @@ def main():
         tokens_seen += batch_size * CONTEXT_LENGTH
 
         if step == 1 or step % LOG_INTERVAL == 0 or step == args.steps:
-            elapsed = max(time.perf_counter() - step_timer, 1e-6)
+            elapsed = max(time.perf_counter() - timer, 1e-6)
             speed = (step - last_log_step) * batch_size * CONTEXT_LENGTH / elapsed
-            step_timer = time.perf_counter()
+            timer = time.perf_counter()
             last_log_step = step
-            print(f"step {step:>5}/{args.steps} | loss {latest_train:.4f} | lr {lr:.2e} | {speed:,.0f} tok/s")
+            print(
+                f"step {step:>5}/{args.steps} | loss {latest_train:.4f} | "
+                f"lr {lr:.2e} | {speed:,.0f} tok/s"
+            )
 
         if step % EVAL_INTERVAL == 0 or step == args.steps:
-            latest_val = estimate_loss(model, val_tokens, batch_size, device, batches=EVAL_BATCHES, amp_enabled=amp_enabled)
+            latest_val = estimate_loss(
+                model, val_tokens, batch_size, device, EVAL_BATCHES, cuda_enabled
+            )
             print(f"           validation loss: {latest_val:.4f}")
 
         if step % SAVE_INTERVAL == 0 or step == args.steps:
@@ -361,31 +327,20 @@ def main():
                 "parameter_count": params,
                 "tokens_seen": tokens_seen,
                 "device": str(device),
-                "amp_enabled": amp_enabled,
+                "amp_enabled": cuda_enabled,
                 "seed": args.seed,
             }
-            save_checkpoint(model, optimizer, scaler, step, latest_train, latest_val, tokens_seen, config)
+            save_checkpoint(
+                model,
+                optimizer,
+                scaler,
+                step,
+                latest_train,
+                latest_val,
+                tokens_seen,
+                config,
+            )
             print(f"           checkpoint saved: {CHECKPOINT_PATH}")
-
-    print("\nPart 4: Final generation")
-    print("-" * 112)
-    prompts = [
-        "The model",
-        "一个小型语言模型",
-        "Partdro",
-    ]
-    generations = []
-    model.eval()
-    for prompt in prompts:
-        try:
-            # The tokenizer is intentionally not a dependency here. Use the
-            # checkpoint only for training in this step; generation is handled
-            # by the dedicated next-step inference script.
-            print(f"Prompt: {prompt} -> generation handled in Step 44")
-            generations.append({"prompt": prompt, "note": "Use Step 44 for tokenizer-backed generation."})
-        except Exception as exc:
-            print(f"Generation note for '{prompt}': {exc}
-")
 
     final_config = {
         "step": args.steps,
@@ -395,20 +350,22 @@ def main():
         "tokens_seen": tokens_seen,
         "batch_size": batch_size,
         "device": str(device),
-        "amp_enabled": amp_enabled,
-        "initial_train_loss": init_train,
-        "initial_val_loss": init_val,
+        "amp_enabled": cuda_enabled,
+        "initial_train_loss": initial_train,
+        "initial_val_loss": initial_val,
         "final_train_loss": latest_train,
         "final_val_loss": latest_val,
         "checkpoint": str(CHECKPOINT_PATH),
     }
-    CONFIG_PATH.write_text(json.dumps(final_config, ensure_ascii=False, indent=2), encoding="utf-8")
+    CONFIG_PATH.write_text(
+        json.dumps(final_config, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
-    print("\nPart 5: Results")
+    print("\nPart 4: Results")
     print("-" * 112)
-    print(f"Initial train loss:  {init_train:.4f}")
+    print(f"Initial train loss:  {initial_train:.4f}")
     print(f"Final train loss:    {latest_train:.4f}")
-    print(f"Initial val loss:    {init_val:.4f}")
+    print(f"Initial val loss:    {initial_val:.4f}")
     print(f"Final val loss:      {latest_val:.4f}")
     print(f"Tokens seen:         {tokens_seen:,}")
     print(f"Checkpoint saved:    {CHECKPOINT_PATH}")
