@@ -2,6 +2,15 @@ import os
 import sys
 from pathlib import Path
 
+try:
+    from tokenizers import Tokenizer, decoders, models, pre_tokenizers
+    from tokenizers.trainers import BpeTrainer
+except ImportError:
+    print("The 'tokenizers' package is not installed.")
+    print("Install it with:")
+    print("  pip install tokenizers")
+    sys.exit(1)
+
 
 # ============================================================
 # Step 34: Real BPE tokenizer experiment
@@ -17,28 +26,11 @@ from pathlib import Path
 #   Later, we will train the FINAL tokenizer on the actual modern
 #   pretraining corpus.
 #
-# We test:
-#   1. Training a Byte-Level BPE tokenizer.
-#   2. Special tokens and vocabulary size.
-#   3. English / Chinese / mixed / code / product text.
-#   4. Token efficiency (characters per token).
-#   5. Save + reload + round-trip correctness.
-#
-# Hugging Face Tokenizers supports BPE training from files or
-# Python iterators. Byte-Level BPE is a useful GPT-style starting
-# point because it can represent arbitrary text without relying on
-# a fixed word vocabulary.
+# This revision explicitly includes the full byte-level alphabet.
+# That matters because a tiny rehearsal corpus may not contain
+# every byte (for example the '|' symbol or emoji bytes). Without
+# the full alphabet, rare/unseen byte values can become <unk>.
 # ============================================================
-
-try:
-    from tokenizers import Tokenizer, decoders, models, pre_tokenizers
-    from tokenizers.trainers import BpeTrainer
-except ImportError:
-    print("The 'tokenizers' package is not installed.")
-    print("Install it with:")
-    print("  pip install tokenizers")
-    sys.exit(1)
-
 
 SEED = 42
 
@@ -49,18 +41,6 @@ CORPUS_PATH = DATA_DIR / "step34_bpe_training_corpus.txt"
 TOKENIZER_PATH = ARTIFACT_DIR / "step34_byte_level_bpe.json"
 
 
-# A compact, modern-style rehearsal corpus.
-#
-# We intentionally include:
-#   - everyday English
-#   - explanation / educational text
-#   - dialogue-like text
-#   - code / structured text
-#   - product and technical language
-#   - Chinese
-#   - mixed Chinese + English
-#
-# This is NOT our final pretraining dataset.
 MODERN_TEXT = """
 A good language model should be able to explain an idea clearly, answer a practical question,
 and continue a conversation without losing the context of what was already said.
@@ -111,14 +91,11 @@ The goal is not to make the vocabulary as large as possible. The goal is to repr
 
 
 def build_training_corpus():
-    """Build a small local corpus, optionally augmented by Tiny Shakespeare."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-
     parts = [MODERN_TEXT]
 
     shakespeare_path = DATA_DIR / "tinyshakespeare.txt"
     if shakespeare_path.exists():
-        # Only use a limited slice here so Step 34 remains quick.
         text = shakespeare_path.read_text(encoding="utf-8", errors="ignore")
         text = text[:250_000]
         parts.append(text)
@@ -134,18 +111,22 @@ def build_training_corpus():
 
 def train_bpe(corpus_path, vocab_size):
     tokenizer = Tokenizer(models.BPE(unk_token="<unk>"))
-
-    # ByteLevel pre-tokenization is a practical GPT-style choice:
-    # arbitrary text can be represented through byte-level symbols.
-    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    byte_level = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    tokenizer.pre_tokenizer = byte_level
     tokenizer.decoder = decoders.ByteLevel()
 
     special_tokens = ["<pad>", "<unk>", "<bos>", "<eos>"]
+
+    # Guarantee that all 256 byte-level symbols are available.
+    # This prevents genuinely unseen bytes in the test text from
+    # becoming <unk> just because they were absent from our tiny corpus.
+    initial_alphabet = byte_level.alphabet()
 
     trainer = BpeTrainer(
         vocab_size=vocab_size,
         min_frequency=2,
         special_tokens=special_tokens,
+        initial_alphabet=initial_alphabet,
         show_progress=True,
     )
 
@@ -163,13 +144,15 @@ def analyze_tokenizer(tokenizer, examples):
         ids = encoding.ids
         decoded = tokenizer.decode(ids)
         round_trip = decoded == text
+        unk_count = sum(token == "<unk>" for token in tokens)
 
         print(f"[{name}]")
-        print(f"Text:     {text}")
-        print(f"Tokens:   {tokens}")
-        print(f"IDs:      {ids}")
-        print(f"Count:    {len(ids)}")
-        print(f"Roundtrip exact: {round_trip}")
+        print(f"Text:             {text}")
+        print(f"Tokens:           {tokens}")
+        print(f"IDs:              {ids}")
+        print(f"Count:            {len(ids)}")
+        print(f"<unk> count:      {unk_count}")
+        print(f"Roundtrip exact:  {round_trip}")
         print()
 
 
@@ -192,7 +175,6 @@ def show_vocab(tokenizer):
     vocab = tokenizer.get_vocab()
     print(f"Vocabulary size: {len(vocab):,}")
 
-    # Show a few low IDs and a few alphabetic-looking pieces.
     id_to_token = {idx: token for token, idx in vocab.items()}
     for idx in sorted(id_to_token)[:24]:
         print(f"  {idx:>5}: {id_to_token[idx]!r}")
@@ -218,6 +200,7 @@ def main():
     print(f"Requested vocabulary size: {vocab_size:,}")
     print("Special tokens: <pad>, <unk>, <bos>, <eos>")
     print("Pre-tokenizer: ByteLevel")
+    print("Initial alphabet: full 256-byte alphabet")
 
     tokenizer = train_bpe(CORPUS_PATH, vocab_size=vocab_size)
 
@@ -263,11 +246,12 @@ def main():
     print("\nPart 7: What this means for our final model")
     print("-" * 96)
     print("1. We are now using a real BPE implementation instead of our hand-written teaching BPE.")
-    print("2. Byte-level BPE can represent English, Chinese, code, symbols, URLs, and product text in one vocabulary.")
-    print("3. Vocabulary size is a design parameter: too small -> more tokens; too large -> more embedding/output parameters and possible fragmentation tradeoffs.")
+    print("2. Byte-Level BPE is suitable for mixed English/Chinese/code/symbol text, provided the byte alphabet is covered.")
+    print("3. The rehearsal corpus is still far too small and English-heavy to decide the final vocabulary.")
     print("4. The final tokenizer should be trained on the same kind of text used for pretraining.")
     print("5. We should measure token efficiency on our actual English/Chinese mixture before fixing the final vocabulary size.")
-    print("6. After this step, the tokenizer vocabulary and token IDs become part of the model interface and must be saved with checkpoints.")
+    print("6. Tokenizer vocabulary and token IDs become part of the model interface and must be saved with checkpoints.")
+    print("7. The next tokenizer experiment should compare vocabulary sizes and English-only vs bilingual training data.")
 
     print("\nStep 34 complete.")
 
