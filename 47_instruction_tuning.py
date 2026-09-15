@@ -13,7 +13,6 @@ from datasets import load_dataset
 from tokenizers import Tokenizer
 
 # Step 47: Small bilingual instruction tuning (SFT)
-# Uses the Step 45 4.24M bilingual base model and a modest, curated public SFT sample.
 # English: OpenAssistant/oasst1 (Apache-2.0)
 # Chinese: Mxode/Chinese-Instruct / coig-cqia (CC-BY-SA-4.0)
 
@@ -32,7 +31,6 @@ WEIGHT_DECAY = 0.01
 WARMUP_STEPS = 150
 EVAL_INTERVAL = 250
 LOG_INTERVAL = 25
-SAVE_INTERVAL = 500
 MAX_EXAMPLES_PER_LANGUAGE = 8000
 
 
@@ -81,7 +79,6 @@ def valid_pair(user, assistant, lang):
 def collect_oasst(max_examples):
     ds = load_dataset("OpenAssistant/oasst1", split="train")
     rows = []
-    # The parquet export is message-level. Build direct user->assistant parent/child pairs.
     by_id = {}
     for row in ds:
         mid = row.get("message_id")
@@ -90,7 +87,7 @@ def collect_oasst(max_examples):
     for row in ds:
         role = str(row.get("role", "")).lower()
         parent_id = row.get("parent_id")
-        if role not in {"assistant", "prompter"} or not parent_id:
+        if role != "assistant" or not parent_id:
             continue
         parent = by_id.get(parent_id)
         if not parent:
@@ -101,7 +98,7 @@ def collect_oasst(max_examples):
         user = pick_text(parent, "text")
         assistant = pick_text(row, "text")
         lang = str(row.get("lang", "en")).lower()
-        if not (lang.startswith("en") or lang in {"eng", "en_us"}):
+        if not lang.startswith("en"):
             continue
         if valid_pair(user, assistant, "en"):
             rows.append({"user": user, "assistant": assistant, "lang": "en"})
@@ -111,13 +108,16 @@ def collect_oasst(max_examples):
 
 
 def collect_coig(max_examples):
-    ds = load_dataset("Mxode/Chinese-Instruct", data_files="coig-cqia/train.jsonl", split="train", streaming=True)
+    # Mxode/Chinese-Instruct exposes each subset as a dataset config.
+    # coig-cqia examples use instruction/input/output fields.
+    ds = load_dataset("Mxode/Chinese-Instruct", "coig-cqia", split="train", streaming=True)
     rows = []
     for row in ds:
-        user = pick_text(row, "instruction", "input", "question")
+        instruction = pick_text(row, "instruction", "prompt", "question")
         extra = pick_text(row, "input")
-        if extra and extra != user:
-            user = f"{user}\n{extra}"
+        user = instruction
+        if extra:
+            user = f"{instruction}\n{extra}" if instruction else extra
         assistant = pick_text(row, "output", "response", "answer")
         if valid_pair(user, assistant, "zh"):
             rows.append({"user": user, "assistant": assistant, "lang": "zh"})
@@ -133,6 +133,14 @@ def build_examples():
     print("Loading Chinese instruction data from Mxode/Chinese-Instruct/coig-cqia ...")
     zh = collect_coig(MAX_EXAMPLES_PER_LANGUAGE)
     print(f"Chinese pairs: {len(zh):,}")
+    if not en or not zh:
+        raise RuntimeError(
+            f"SFT dataset is incomplete: English={len(en):,}, Chinese={len(zh):,}."
+        )
+    # Keep the two languages balanced instead of letting English dominate.
+    n = min(len(en), len(zh))
+    en = en[:n]
+    zh = zh[:n]
     all_rows = en + zh
     random.shuffle(all_rows)
     split = max(1, int(len(all_rows) * 0.95))
@@ -140,27 +148,36 @@ def build_examples():
 
 
 def make_sequence(tok, row):
-    prompt = f"User: {row['user']}\nAssistant: {row['assistant']}"
-    ids = tok.encode(prompt).ids
+    # Keep the full prompt in the context, but train only on Assistant tokens.
+    prefix = f"User: {row['user']}\nAssistant:"
+    full = prefix + " " + row["assistant"]
+    prefix_ids = tok.encode(prefix).ids
+    ids = tok.encode(full).ids
     if len(ids) > CONTEXT_LENGTH:
         ids = ids[:CONTEXT_LENGTH]
-    return ids
+    response_start = min(len(prefix_ids), len(ids))
+    return ids, response_start
 
 
 def make_tensors(tok, rows):
     xs, ys = [], []
     for row in rows:
-        ids = make_sequence(tok, row)
-        if len(ids) < 6:
+        ids, response_start = make_sequence(tok, row)
+        if len(ids) < response_start + 2:
             continue
         x = ids[:-1]
         y = ids[1:]
+        # Ignore prompt tokens. Only predict the answer portion.
+        prompt_target_count = max(0, response_start - 1)
+        y[:prompt_target_count] = [-100] * prompt_target_count
         pad = CONTEXT_LENGTH - len(x)
         if pad > 0:
             x = x + [0] * pad
             y = y + [-100] * pad
         xs.append(torch.tensor(x, dtype=torch.long))
         ys.append(torch.tensor(y, dtype=torch.long))
+    if not xs:
+        raise RuntimeError("No usable SFT examples remained after tokenization.")
     return torch.stack(xs), torch.stack(ys)
 
 
@@ -190,7 +207,9 @@ class Block(nn.Module):
         self.attn = Attn()
         self.ln2 = nn.LayerNorm(D_MODEL)
         self.ffn = nn.Sequential(
-            nn.Linear(D_MODEL, D_FF, bias=False), nn.GELU(), nn.Linear(D_FF, D_MODEL, bias=False)
+            nn.Linear(D_MODEL, D_FF, bias=False),
+            nn.GELU(),
+            nn.Linear(D_FF, D_MODEL, bias=False),
         )
 
     def forward(self, x):
@@ -218,12 +237,17 @@ class TinyGPT(nn.Module):
         logits = self.head(self.ln(h))
         loss = None
         if y is not None:
-            loss = F.cross_entropy(logits.reshape(-1, VOCAB_SIZE), y.reshape(-1), ignore_index=-100)
+            loss = F.cross_entropy(
+                logits.reshape(-1, VOCAB_SIZE),
+                y.reshape(-1),
+                ignore_index=-100,
+            )
         return logits, loss
 
     @torch.no_grad()
     def generate(self, x, max_new_tokens=100, temperature=0.7, top_k=40):
         self.eval()
+        start_len = x.size(1)
         for _ in range(max_new_tokens):
             ctx = x[:, -CONTEXT_LENGTH:]
             logits, _ = self(ctx)
@@ -233,14 +257,16 @@ class TinyGPT(nn.Module):
             probs = torch.softmax(logits, dim=-1)
             nxt = torch.multinomial(probs, 1)
             x = torch.cat([x, nxt], dim=1)
-        return x
+        return x, start_len
 
 
 def lr_at(step, total):
     if step <= WARMUP_STEPS:
         return LEARNING_RATE * step / WARMUP_STEPS
     p = min(max((step - WARMUP_STEPS) / max(1, total - WARMUP_STEPS), 0), 1)
-    return MIN_LEARNING_RATE + (LEARNING_RATE - MIN_LEARNING_RATE) * 0.5 * (1 + torch.cos(torch.tensor(torch.pi * p))).item()
+    return MIN_LEARNING_RATE + (LEARNING_RATE - MIN_LEARNING_RATE) * 0.5 * (
+        1 + torch.cos(torch.tensor(torch.pi * p)).item()
+    )
 
 
 def main():
@@ -251,7 +277,7 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("=" * 112)
-    print("Step 47: Small bilingual instruction tuning")
+    print("Step 47: Small bilingual instruction tuning (fixed)")
     print("=" * 112)
     print(f"device:              {device}")
     if device.type == "cuda":
@@ -260,8 +286,7 @@ def main():
     drive_root = Path("/content/drive/MyDrive/transformers_exercise_20260911")
     ckpt_path = drive_root / "artifacts" / "step45" / "tiny_gpt_step45.pt"
     tok_candidates = [drive_root / "artifacts" / "step43" / "step43_bpe_8000.json"]
-    for p in [drive_root / "artifacts" / "step45" / "step45_bpe_8000.json"]:
-        tok_candidates.append(p)
+    tok_candidates.append(drive_root / "artifacts" / "step45" / "step45_bpe_8000.json")
     tok_path = next((p for p in tok_candidates if p.exists()), None)
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
@@ -282,7 +307,12 @@ def main():
     model = TinyGPT().to(device)
     checkpoint = torch.load(ckpt_path, map_location="cpu")
     model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY, betas=(0.9, 0.95))
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=LEARNING_RATE,
+        weight_decay=WEIGHT_DECAY,
+        betas=(0.9, 0.95),
+    )
     scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda")
 
     model.train()
@@ -296,37 +326,53 @@ def main():
         x = train_x[idx].to(device)
         y = train_y[idx].to(device)
         optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=device.type == "cuda"):
+        with torch.autocast(
+            device_type="cuda", dtype=torch.float16, enabled=device.type == "cuda"
+        ):
             _, loss = model(x, y)
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         scaler.step(optimizer)
         scaler.update()
+
         if step == 1 or step % LOG_INTERVAL == 0 or step == args.steps:
-            speed = (step * BATCH_SIZE * CONTEXT_LENGTH) / max(time.perf_counter() - tick, 1e-6)
-            print(f"step {step:>5}/{args.steps} | loss {loss.item():.4f} | lr {lr:.2e} | {speed:,.0f} tok/s")
+            speed = (step * BATCH_SIZE * CONTEXT_LENGTH) / max(
+                time.perf_counter() - tick, 1e-6
+            )
+            print(
+                f"step {step:>5}/{args.steps} | loss {loss.item():.4f} | "
+                f"lr {lr:.2e} | {speed:,.0f} tok/s"
+            )
         if step % EVAL_INTERVAL == 0 or step == args.steps:
             model.eval()
-            with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.float16, enabled=device.type == "cuda"):
+            with torch.no_grad(), torch.autocast(
+                device_type="cuda", dtype=torch.float16, enabled=device.type == "cuda"
+            ):
                 eval_idx = torch.arange(min(len(val_x), BATCH_SIZE), device="cpu")
-                _, vloss = model(val_x[eval_idx].to(device), val_y[eval_idx].to(device))
+                _, vloss = model(
+                    val_x[eval_idx].to(device),
+                    val_y[eval_idx].to(device),
+                )
             model.train()
             print(f"           validation loss: {vloss.item():.4f}")
 
     out_dir = drive_root / "artifacts" / "step47"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_ckpt = out_dir / "tiny_gpt_step47_sft.pt"
+    out_ckpt = out_dir / "tiny_gpt_step47_sft_fixed.pt"
     out_tok = out_dir / "step47_tokenizer.json"
     tok.save(str(out_tok))
-    torch.save({
-        "model_state_dict": model.state_dict(),
-        "tokenizer_path": str(out_tok),
-        "base_checkpoint": str(ckpt_path),
-        "step": args.steps,
-        "train_examples": len(train_x),
-        "validation_examples": len(val_x),
-    }, out_ckpt)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "tokenizer_path": str(out_tok),
+            "base_checkpoint": str(ckpt_path),
+            "step": args.steps,
+            "train_examples": len(train_x),
+            "validation_examples": len(val_x),
+        },
+        out_ckpt,
+    )
 
     print("\nPart 2: Instruction probes")
     prompts = [
@@ -339,11 +385,11 @@ def main():
     for prompt in prompts:
         ids = tok.encode(prompt).ids
         x = torch.tensor([ids], dtype=torch.long, device=device)
-        out = model.generate(x)
-        text = tok.decode(out[0].tolist())
-        print(f"\n{prompt}\n{text}")
+        out, start_len = model.generate(x)
+        generated = tok.decode(out[0].tolist()[start_len:])
+        print(f"\n{prompt}\nAssistant: {generated}")
 
-    print("\nStep 47 complete.")
+    print("\nStep 47 fixed complete.")
     print(f"Checkpoint: {out_ckpt}")
 
 
