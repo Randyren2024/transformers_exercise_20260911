@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TinyGPT — Step 54</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: #f5f7fb; color: #172033; }
+    .shell { width: min(900px, calc(100% - 32px)); margin: 40px auto; }
+    .meta { color: #667085; }
+    .chat { min-height: 420px; background: white; border: 1px solid #e3e7ef; border-radius: 16px; padding: 20px; box-shadow: 0 12px 35px rgba(0,0,0,.06); }
+    .msg { margin: 12px 0; white-space: pre-wrap; line-height: 1.55; }
+    .user { font-weight: 700; }
+    .assistant { color: #344054; }
+    .composer { display: flex; gap: 10px; margin-top: 14px; }
+    textarea { flex: 1; min-height: 88px; resize: vertical; padding: 12px; border: 1px solid #d0d5dd; border-radius: 10px; font: inherit; }
+    button { align-self: flex-end; padding: 12px 18px; border: 0; border-radius: 10px; background: #172033; color: white; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: wait; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <h1>TinyGPT</h1>
+    <p class="meta">8.4M-parameter bilingual model · Step 54 deployment baseline</p>
+    <section class="chat" id="chat">
+      <div class="msg assistant">Assistant: Hello. This is the local TinyGPT inference demo.</div>
+    </section>
+    <form class="composer" id="form">
+      <textarea id="message" placeholder="Ask a short question in English or Chinese..."></textarea>
+      <button id="send" type="submit">Send</button>
+    </form>
+  </main>
+  <script>
+    const form = document.getElementById('form');
+    const message = document.getElementById('message');
+    const chat = document.getElementById('chat');
+    const send = document.getElementById('send');
+    function append(role, text) {
+      const node = document.createElement('div');
+      node.className = 'msg ' + role;
+      node.textContent = (role === 'user' ? 'You: ' : 'Assistant: ') + text;
+      chat.appendChild(node);
+      node.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const text = message.value.trim();
+      if (!text) return;
+      append('user', text);
+      message.value = '';
+      send.disabled = true;
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Request failed');
+        append('assistant', data.response || '(empty response)');
+      } catch (err) {
+        append('assistant', 'Error: ' + err.message);
+      } finally {
+        send.disabled = false;
+        message.focus();
+      }
+    });
+  </script>
+</body>
+</html>
