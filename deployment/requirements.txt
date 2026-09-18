@@ -1,0 +1,4 @@
+Flask>=3.1,<4
+tokenizers>=0.20,<1
+torch>=2.6
+waitress>=3,<4
