@@ -1,0 +1,7 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Model artifacts (see deployment/README.md)
+deployment/models/
