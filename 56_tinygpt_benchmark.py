@@ -73,7 +73,7 @@ def normalize(text):
     text = text.lower().strip()
     text = text.replace("。", ".").replace("！", "!").replace("？", "?")
     text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"["'“”‘’]", "", text)
+    text = re.sub(r"""["'“”‘’]""", "", text)
     text = re.sub(r"[.,!?;:，。！？；：]+$", "", text)
     return text
 
