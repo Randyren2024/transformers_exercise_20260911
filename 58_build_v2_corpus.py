@@ -49,19 +49,23 @@ def get_field(row, *names):
 
 def stream_source(name):
     if name == "fineweb_en":
+        # Avoid FineWeb default: it currently expands to tens of thousands
+        # of Parquet files before streaming can begin.
         return load_dataset(
             "HuggingFaceFW/fineweb",
+            "sample-10BT",
             split="train",
             streaming=True,
-        ).shuffle(seed=SEED, buffer_size=10_000)
-
+        )
     if name == "fineweb2_zh":
+        # FineWeb-2 currently has no sample-* configs.
+        # Keep streaming and start consuming rows directly.
         return load_dataset(
             "HuggingFaceFW/fineweb-2",
             "cmn_Hani",
             split="train",
             streaming=True,
-        ).shuffle(seed=SEED, buffer_size=10_000)
+        )
 
     if name == "wiki_en":
         return load_dataset(
