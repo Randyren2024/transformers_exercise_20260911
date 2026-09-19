@@ -520,46 +520,47 @@ def make_supervised_batch(tok, rows, batch_idx, device):
 
 
 def answer_nll_batch(model, tok, prompts, answers, device):
-    xs, masks = [], []
+    xs, ys, masks = [], [], []
     for p, a in zip(prompts, answers):
         item = encode_pair(tok, p, a, device)
         if item is None:
             raise RuntimeError("Prompt/answer too long.")
         x, y, mask = item
         xs.append(x)
+        ys.append(y)
         masks.append(mask)
 
     max_len = max(x.size(1) for x in xs)
-    xb = []
-    mb = []
-    for x, m in zip(xs, masks):
+    xb, yb, mb = [], [], []
+    for x, y, m in zip(xs, ys, masks):
         pad = max_len - x.size(1)
         if pad:
             x = F.pad(x, (0, pad), value=0)
+            y = F.pad(y, (0, pad), value=-100)
             m = F.pad(m, (0, pad), value=False)
         xb.append(x)
+        yb.append(y)
         mb.append(m)
 
     x = torch.cat(xb, 0)
+    y = torch.cat(yb, 0)
     m = torch.cat(mb, 0)
 
+    # encode_pair returns:
+    #   x = full_ids[:-1]
+    #   y = full_ids[1:]
+    # Therefore model(x) predicts exactly y.
     logits = model(x)
-    targets = x[:, 1:]
-
-    # x contains full_ids[:-1], so logits at position t predict x[:, t+1].
-    # The answer mask is aligned to those target positions.
-    logits = logits[:, :-1, :]
-    valid = m[:, 1:]
 
     losses = F.cross_entropy(
         logits.reshape(-1, VOCAB),
-        targets.reshape(-1),
+        y.reshape(-1),
         reduction="none",
     ).view(x.size(0), -1)
 
-    nll = (losses * valid.float()).sum(dim=1) / valid.float().sum(dim=1).clamp_min(1.0)
+    valid = m.float()
+    nll = (losses * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1.0)
     return nll
-
 
 def sft_loss(model, tok, prompts, answers):
     xs = []
@@ -609,7 +610,8 @@ def prompt_kl_loss(student, teacher, tok, prompts, device):
             continue
         ids = ids[:CTX]
         x = torch.tensor([ids[:-1]], dtype=torch.long, device=device)
-        # Preserve the prompt distribution, not the generated answer.
+        # model(x) predicts ids[1:], so each position in x can be
+        # matched directly between student and frozen Step 59 teacher.
         m = torch.ones_like(x, dtype=torch.bool)
         xs.append(x)
         masks.append(m)
@@ -638,9 +640,8 @@ def prompt_kl_loss(student, teacher, tok, prompts, device):
     t_prob = F.softmax(teacher_logits.float(), dim=-1)
     token_kl = F.kl_div(s_logp, t_prob, reduction="none").sum(dim=-1)
 
-    valid = m[:, 1:]
-    return (token_kl * valid.float()).sum() / valid.float().sum().clamp_min(1.0)
-
+    valid = m.float()
+    return (token_kl * valid).sum() / valid.sum().clamp_min(1.0)
 
 def load_raw_store():
     if not RAW_TRAIN_BIN.exists():
