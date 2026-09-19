@@ -572,8 +572,10 @@ def sft_loss(model, tok, prompts, answers):
     xs = []
     ys = []
     masks = []
+    device = next(model.parameters()).device
+
     for p, a in zip(prompts, answers):
-        item = encode_pair(tok, p, a, next(model.parameters()).device)
+        item = encode_pair(tok, p, a, device)
         if item is None:
             continue
         x, y, mask = item
@@ -585,26 +587,33 @@ def sft_loss(model, tok, prompts, answers):
         raise RuntimeError("No valid examples.")
 
     max_len = max(x.size(1) for x in xs)
-    xb, yb = [], []
-    for x, y in zip(xs, ys):
+    xb, yb, mb = [], [], []
+
+    for x, y, mask in zip(xs, ys, masks):
         pad = max_len - x.size(1)
         if pad:
             x = F.pad(x, (0, pad), value=0)
             y = F.pad(y, (0, pad), value=-100)
+            mask = F.pad(mask, (0, pad), value=False)
         xb.append(x)
         yb.append(y)
+        mb.append(mask)
 
     x = torch.cat(xb, 0)
     y = torch.cat(yb, 0)
-    logits = model(x)[:, :-1, :]
-    targets = y[:, 1:]
-    loss = F.cross_entropy(
+    mask = torch.cat(mb, 0)
+
+    # model(x) predicts y = full_ids[1:].
+    # Only answer positions contribute to the supervised CE loss.
+    logits = model(x)
+    targets = y.clone()
+    targets[~mask] = -100
+
+    return F.cross_entropy(
         logits.reshape(-1, VOCAB),
         targets.reshape(-1),
         ignore_index=-100,
     )
-    return loss
-
 
 def prompt_kl_loss(student, teacher, tok, prompts, device):
     xs = []
@@ -718,7 +727,7 @@ def main():
     tok = Tokenizer.from_file(str(TOKENIZER_PATH))
 
     print("=" * 112)
-    print("Node 62 — TinyGPT v2 precision knowledge-alignment SFT")
+    print("Node 63 — TinyGPT v2 corrected precision knowledge-alignment SFT")
     print("=" * 112)
     print("device:", device)
     if device.type == "cuda":
