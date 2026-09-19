@@ -544,7 +544,7 @@ def answer_nll_batch(model, tok, prompts, answers, device):
     m = torch.cat(mb, 0)
 
     logits = model(x)
-    targets = torch.cat([tok_ids for tok_ids in []], dim=0) if False else x[:, 1:]
+    targets = x[:, 1:]
 
     # x contains full_ids[:-1], so logits at position t predict x[:, t+1].
     # The answer mask is aligned to those target positions.
