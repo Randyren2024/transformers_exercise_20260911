@@ -544,10 +544,13 @@ def answer_nll_batch(model, tok, prompts, answers, device):
     m = torch.cat(mb, 0)
 
     logits = model(x)
-    targets = x[:, 1:]
-    logits = logits[:, :-1, :]
+    targets = torch.cat([tok_ids for tok_ids in []], dim=0) if False else x[:, 1:]
 
+    # x contains full_ids[:-1], so logits at position t predict x[:, t+1].
+    # The answer mask is aligned to those target positions.
+    logits = logits[:, :-1, :]
     valid = m[:, 1:]
+
     losses = F.cross_entropy(
         logits.reshape(-1, VOCAB),
         targets.reshape(-1),
@@ -627,9 +630,9 @@ def prompt_kl_loss(student, teacher, tok, prompts, device):
     x = torch.cat(xb, 0)
     m = torch.cat(mb, 0)
 
-    student_logits = student(x)[:, :-1, :]
+    student_logits = student(x)
     with torch.no_grad():
-        teacher_logits = teacher(x)[:, :-1, :]
+        teacher_logits = teacher(x)
 
     s_logp = F.log_softmax(student_logits.float(), dim=-1)
     t_prob = F.softmax(teacher_logits.float(), dim=-1)
