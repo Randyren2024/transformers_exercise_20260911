@@ -103,7 +103,7 @@ def get_qa_groups():
     src = urllib.request.urlopen(QA_URL, timeout=60).read().decode("utf-8")
     env = {"__name__": "precision_data_69"}
     exec(compile(src, "69_precision_data.py", "exec"), env)
-    return env["qa_groups"]
+    return env["qa_groups"]()
 
 
 def rows_from_groups(groups):
