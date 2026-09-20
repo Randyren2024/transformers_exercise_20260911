@@ -1,6 +1,7 @@
 import math
 import random
 import time
+import urllib.request
 from pathlib import Path
 
 import torch
@@ -8,7 +9,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tokenizers import Tokenizer
 
-from precision_data_69 import qa_groups
+# Load the exact QA data module directly from GitHub so Colab CLI does not
+# depend on the local WSL working directory.
+QA_DATA_URL = (
+    "https://raw.githubusercontent.com/"
+    "Randyren2024/transformers_exercise_20260911/"
+    "main/69_precision_data.py"
+    "?v=d5fd2ec545b53ff0a7cc0b3d09bf447cc5358213"
+)
+qa_source = urllib.request.urlopen(QA_DATA_URL, timeout=60).read().decode("utf-8")
+qa_env = {"__name__": "precision_data_69"}
+exec(compile(qa_source, "69_precision_data.py", "exec"), qa_env)
+qa_groups = qa_env["qa_groups"]
 
 # Node 69 — controlled SFT on the 42M Step 66 base model.
 #
@@ -214,7 +226,7 @@ def batch_tensors(tok, rows, device):
         if item is not None:
             encoded.append(item)
 
-    max_len = max(len(x[0]) for x in encoded)
+    max_len = max(len(item[0]) for item in encoded)
     xs, ys, ms = [], [], []
 
     for x, y, m in encoded:
