@@ -14,8 +14,11 @@ NODE63_URL = (
     "?v=e13e36628744b0facf9087d6cd8e829a9934a44f"
 )
 
+from tokenizers import Tokenizer
+import random
+
 source = urllib.request.urlopen(NODE63_URL, timeout=60).read().decode("utf-8")
-node63_env = {"__name__": "node63_lib"}
+node63_env = {"__name__": "node63_lib", "Tokenizer": Tokenizer}
 exec(
     compile(source, "63_precision_knowledge_alignment_sft_v2.py", "exec"),
     node63_env,
@@ -24,7 +27,6 @@ globals().update({k: v for k, v in node63_env.items() if k != "__name__"})
 
 import numpy as np
 import torch
-from tokenizers import Tokenizer
 
 DRIVE = Path("/content/drive/MyDrive/transformers_exercise_20260911")
 TOK_PATH = DRIVE / "artifacts" / "step43" / "step43_bpe_8000.json"
