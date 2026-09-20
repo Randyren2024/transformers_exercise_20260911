@@ -103,7 +103,13 @@ def get_qa_groups():
     src = urllib.request.urlopen(QA_URL, timeout=60).read().decode("utf-8")
     env = {"__name__": "precision_data_69"}
     exec(compile(src, "69_precision_data.py", "exec"), env)
-    return env["qa_groups"]()
+    obj = env["qa_groups"]
+    groups = obj() if callable(obj) else obj
+    while callable(groups):
+        groups = groups()
+    if not isinstance(groups, list):
+        raise TypeError(f"Expected QA group list, got {type(groups)!r}")
+    return groups
 
 
 def rows_from_groups(groups):
