@@ -29,10 +29,25 @@ STEP63_BEST = DRIVE / "artifacts" / "step63" / "tiny_gpt_v2_precision_best.pt"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 tok = Tokenizer.from_file(str(TOK_PATH))
 
-train_groups, val_groups = split_groups()
-all_groups = train_groups + val_groups
+def split_groups_local():
+    groups = qa_groups()
+    rng = random.Random(63)
+    rng.shuffle(groups)
+    cut = max(1, int(len(groups) * 0.80))
+    return groups[:cut], groups[cut:]
 
-rows = rows_from_groups(all_groups)
+def rows_from_groups_local(groups):
+    rows = []
+    for en_prompts, en_good, en_bad, zh_prompts, zh_good, zh_bad in groups:
+        for p in en_prompts:
+            rows.append(("en", p, en_good, en_bad))
+        for p in zh_prompts:
+            rows.append(("zh", p, zh_good, zh_bad))
+    return rows
+
+train_groups, val_groups = split_groups_local()
+all_groups = train_groups + val_groups
+rows = rows_from_groups_local(all_groups)
 
 def load(path):
     return load_model(path, device)
@@ -89,8 +104,8 @@ step63 = load(STEP63_BEST)
 
 for name, model in [("Step 59 baseline", step59), ("Step 63 BEST", step63)]:
     all_score = score(model, rows)
-    train_rows = rows_from_groups(train_groups)
-    val_rows = rows_from_groups(val_groups)
+    train_rows = rows_from_groups_local(train_groups)
+    val_rows = rows_from_groups_local(val_groups)
     train_score = score(model, train_rows)
     val_score = score(model, val_rows)
 
