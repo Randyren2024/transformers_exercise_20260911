@@ -19,6 +19,7 @@ exec(compile(source, "63_precision_knowledge_alignment_sft_v2.py", "exec"), {"__
 
 import numpy as np
 import torch
+from tokenizers import Tokenizer
 
 DRIVE = Path("/content/drive/MyDrive/transformers_exercise_20260911")
 TOK_PATH = DRIVE / "artifacts" / "step43" / "step43_bpe_8000.json"
