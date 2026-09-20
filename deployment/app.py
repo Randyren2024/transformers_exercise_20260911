@@ -6,8 +6,8 @@ from flask import Flask, jsonify, render_template, request
 from model import TinyGPTService
 
 BASE_DIR = Path(__file__).resolve().parent
-CHECKPOINT = Path(os.getenv("TINY_GPT_CHECKPOINT", BASE_DIR / "model" / "tiny_gpt_step54_best.pt"))
-TOKENIZER = Path(os.getenv("TINY_GPT_TOKENIZER", BASE_DIR / "model" / "step43_bpe_8000.json"))
+CHECKPOINT = Path(os.getenv("TINY_GPT_CHECKPOINT", BASE_DIR / "models" / "tiny_gpt_v2_step_8000.pt"))
+TOKENIZER = Path(os.getenv("TINY_GPT_TOKENIZER", BASE_DIR / "models" / "step43_bpe_8000.json"))
 DEVICE = os.getenv("TINY_GPT_DEVICE", "")
 
 app = Flask(__name__)
