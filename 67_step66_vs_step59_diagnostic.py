@@ -179,11 +179,15 @@ print("Step 66 checkpoint:", STEP66_BEST)
 print("Step 59 checkpoint:", STEP59)
 print(f"Groups: {len(all_groups)} | train: {len(train_groups)} | held-out: {len(val_groups)}")
 
-step59 = load(STEP59, device)  # from Step 63 helpers — same architecture
+step59 = load_step59(STEP59, device)
 step66 = load_step66(STEP66_BEST, device)
 
 train_rows = rows_from_groups_local(train_groups)
 val_rows = rows_from_groups_local(val_groups)
+
+def load_step59(path, device):
+    model = load_model(path, device)
+    return model
 
 probes = [
     ("李白是谁？", "李白是中国唐代诗人。"),
