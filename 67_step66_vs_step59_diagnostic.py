@@ -124,6 +124,34 @@ train_groups, val_groups = split_groups_local()
 all_groups = train_groups + val_groups
 rows = rows_from_groups_local(all_groups)
 
+def score(model, subset):
+    good_nlls = []
+    bad_nlls = []
+    ranks = []
+    margins = []
+
+    for _, prompt, good, bad in subset:
+        good_nll, bad_nll = answer_nll_batch(
+            model,
+            tok,
+            [prompt, prompt],
+            [good, bad],
+            device,
+        )
+        g = float(good_nll.item())
+        b = float(bad_nll.item())
+        good_nlls.append(g)
+        bad_nlls.append(b)
+        margins.append(b - g)
+        ranks.append(float(g < b))
+
+    return {
+        "good_nll": float(np.mean(good_nlls)),
+        "bad_nll": float(np.mean(bad_nlls)),
+        "margin": float(np.mean(margins)),
+        "rank_accuracy": float(np.mean(ranks)),
+    }
+
 @torch.inference_mode()
 def generate(model, tok, prompt, max_new=32, ctx=256):
     model.eval()
