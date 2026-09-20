@@ -15,7 +15,12 @@ NODE63_URL = (
 )
 
 source = urllib.request.urlopen(NODE63_URL, timeout=60).read().decode("utf-8")
-exec(compile(source, "63_precision_knowledge_alignment_sft_v2.py", "exec"), {"__name__": "node63_lib"})
+node63_env = {"__name__": "node63_lib"}
+exec(
+    compile(source, "63_precision_knowledge_alignment_sft_v2.py", "exec"),
+    node63_env,
+)
+globals().update({k: v for k, v in node63_env.items() if k != "__name__"})
 
 import numpy as np
 import torch
