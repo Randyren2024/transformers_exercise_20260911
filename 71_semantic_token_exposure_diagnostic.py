@@ -16,6 +16,7 @@ DRIVE = Path("/content/drive/MyDrive/transformers_exercise_20260911")
 TOK_PATH = DRIVE / "artifacts/step43/step43_bpe_8000.json"
 STEP66 = DRIVE / "artifacts/step66/tiny_gpt_v2_best.pt"
 STEP69 = DRIVE / "artifacts/step69/tiny_gpt_v2_42m_sft_best.pt"
+STEP69_FROZEN = DRIVE / "artifacts/step69/tiny_gpt_v2_42m_sft_frozenhead_baseline.pt"
 
 VOCAB = 8000
 D = 512
@@ -25,17 +26,81 @@ FF = 2048
 CTX = 256
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-PROBES = [
-    ("李白是谁？", "李白是中国唐代诗人。"),
-    ("谁是爱因斯坦？", "爱因斯坦是出生于德国的物理学家。"),
-    ("什么是人工智能？", "人工智能是让计算机执行通常需要人类智能任务的一种技术。"),
-    ("什么是 Transformer？", "Transformer 是一种以注意力机制为核心的神经网络架构。"),
-    ("What is artificial intelligence?", "Artificial intelligence is technology that enables computers to perform tasks that normally require human intelligence."),
-    ("What is a transformer in machine learning?", "A transformer is a neural network architecture built around attention."),
-    ("Translate 'software' into Chinese.", "软件。"),
-    ("What is 7 + 8?", "15."),
-    ("What is 7 times 8?", "56."),
+# Probe sets are generated from the same split 69_42m_controlled_sft.py
+# uses (qa_groups() shuffled with SEED=69, 80/20). Regenerate rather than
+# hand-edit. PROBES_HELDOUT is the headline metric: those facts are never
+# trained on. The gap between the two sets measures memorization.
+# Auto-generated probe sets for the Node 70B/71 diagnostics.
+# Regenerate with the split in 69_42m_controlled_sft.py (SEED=69, 80/20).
+
+# 9 QA groups Node 69 never trains on (its validation split).
+PROBES_HELDOUT = [
+    ('What does a tokenizer do?', 'A tokenizer converts text into tokens that a model can process.'),
+    ('What is a tokenizer?', 'A tokenizer converts text into tokens that a model can process.'),
+    ('What was Alan Turing known for?', 'Alan Turing was a British mathematician and computer scientist.'),
+    ('Who was Alan Turing?', 'Alan Turing was a British mathematician and computer scientist.'),
+    ('What was Newton known for?', 'Isaac Newton was an English physicist and mathematician.'),
+    ('Who was Isaac Newton?', 'Isaac Newton was an English physicist and mathematician.'),
+    ('What is JSON used for?', 'JSON is a text format commonly used to represent structured data.'),
+    ('What is JSON?', 'JSON is a text format commonly used to represent structured data.'),
+    ('JSON 用来做什么？', 'JSON 是一种常用于表示结构化数据的文本格式。'),
+    ('什么是 JSON？', 'JSON 是一种常用于表示结构化数据的文本格式。'),
+    ('Define machine learning.', 'Machine learning lets computers learn patterns from data.'),
+    ('What is machine learning?', 'Machine learning lets computers learn patterns from data.'),
+    ('What is opposite to big?', 'Small.'),
+    ('What is the opposite of big?', 'Small.'),
+    ('Define the Internet.', 'The Internet is a global network of connected computer systems.'),
+    ('What is the Internet?', 'The Internet is a global network of connected computer systems.'),
+    ('How many months are in a year?', 'Twelve months.'),
+    ('How many months make one year?', 'Twelve months.'),
+    ('tokenizer 有什么作用？', 'tokenizer 把文本转换成模型可以处理的词元。'),
+    ('什么是 tokenizer？', 'tokenizer 把文本转换成模型可以处理的词元。'),
+    ('什么是互联网？', '互联网是由相互连接的计算机系统组成的全球网络。'),
+    ('请定义互联网。', '互联网是由相互连接的计算机系统组成的全球网络。'),
+    ('一年包含多少个月？', '十二个月。'),
+    ('一年有几个月？', '十二个月。'),
+    ('图灵以什么著名？', '图灵是英国数学家和计算机科学家。'),
+    ('图灵是谁？', '图灵是英国数学家和计算机科学家。'),
+    ('什么是大的反义词？', '小。'),
+    ('大的反义词是什么？', '小。'),
+    ("Translate 'data' into Chinese.", '数据。'),
+    ('What is the Chinese word for data?', '数据。'),
+    ('data 的中文是什么？', '数据。'),
+    ('把“data”翻译成中文。', '数据。'),
+    ('什么是机器学习？', '机器学习让计算机从数据中学习规律。'),
+    ('请定义机器学习。', '机器学习让计算机从数据中学习规律。'),
+    ('牛顿以什么著名？', '牛顿是英国物理学家和数学家。'),
+    ('牛顿是谁？', '牛顿是英国物理学家和数学家。'),
 ]
+
+# 6 QA groups drawn from Node 69's training split, same construction, for contrast.
+PROBES_SEEN = [
+    ('Calculate 72 / 8.', '9.'),
+    ('What is 72 divided by 8?', '9.'),
+    ('72 除以 8 等于多少？', '9。'),
+    ('计算 72 除以 8。', '9。'),
+    ('Define a language model.', 'A language model predicts likely tokens from context and can generate text.'),
+    ('What is a language model?', 'A language model predicts likely tokens from context and can generate text.'),
+    ('Define artificial intelligence.', 'Artificial intelligence is technology that enables computers to perform tasks that normally require human intelligence.'),
+    ('What is artificial intelligence?', 'Artificial intelligence is technology that enables computers to perform tasks that normally require human intelligence.'),
+    ('What was Li Bai known for?', 'Li Bai was a Chinese poet of the Tang dynasty.'),
+    ('Who was Li Bai?', 'Li Bai was a Chinese poet of the Tang dynasty.'),
+    ('What is the chemical formula of water?', 'Water is H2O.'),
+    ('What is water made of?', 'Water is H2O.'),
+    ('什么是人工智能？', '人工智能是让计算机执行通常需要人类智能任务的一种技术。'),
+    ('请定义人工智能。', '人工智能是让计算机执行通常需要人类智能任务的一种技术。'),
+    ('李白以什么著名？', '李白是中国唐代诗人。'),
+    ('李白是谁？', '李白是中国唐代诗人。'),
+    ('水由什么组成？', '水的化学式是 H2O。'),
+    ('水的化学式是什么？', '水的化学式是 H2O。'),
+    ('什么是语言模型？', '语言模型根据上下文预测可能的词元，并生成文本。'),
+    ('请定义语言模型。', '语言模型根据上下文预测可能的词元，并生成文本。'),
+    ("Translate 'software' into Chinese.", '软件。'),
+    ('What is the Chinese word for software?', '软件。'),
+    ('software 的中文是什么？', '软件。'),
+    ('把“software”翻译成中文。', '软件。'),
+]
+
 
 
 class Attn(nn.Module):
@@ -181,45 +246,107 @@ def diagnose(model, tok, prompt, answer, max_new=24):
     }
 
 
+def mean(xs):
+    xs = list(xs)
+    return sum(xs) / len(xs) if xs else float("nan")
+
+
+@torch.inference_mode()
+def sweep(model, tok, probes, label):
+    results = [diagnose(model, tok, p, a) for p, a in probes]
+    sem = [r for r in results if r["semantic_rank"] is not None]
+    div = [
+        r["divergence_token_index"]
+        for r in results
+        if r["divergence_token_index"] is not None
+    ]
+    stats = {
+        "label": label,
+        "n": len(results),
+        "format_nll": mean(r["format_nll"] for r in results),
+        "format_top1": mean(r["format_rank"] == 1 for r in results) * 100,
+        "sem_nll": mean(r["semantic_nll"] for r in sem),
+        "sem_rank": mean(r["semantic_rank"] for r in sem),
+        "sem_top1": mean(r["semantic_rank"] == 1 for r in sem) * 100,
+        "divergence": mean(div),
+        "any_token_correct": mean(r["divergence_token_index"] != 0 for r in results) * 100,
+    }
+
+    print(f"\n{label}  (n={stats['n']})")
+    print(f"  format-first  NLL {stats['format_nll']:.4f} | top1 {stats['format_top1']:.1f}%")
+    print(f"  semantic-first NLL {stats['sem_nll']:.4f} | rank {stats['sem_rank']:.1f} "
+          f"| top1 {stats['sem_top1']:.1f}%")
+    print(f"  mean first free-run divergence token: {stats['divergence']:.2f}")
+    print(f"  probes whose FIRST generated token is correct: {stats['any_token_correct']:.1f}%")
+
+    if label == "HELD-OUT":
+        print("\n  per-probe detail (held-out):")
+        for (prompt, answer), r in zip(probes, results):
+            print(f"    {prompt}")
+            print(f"      gold {answer!r}")
+            print(f"      sem first {r['semantic_token']!r} rank {r['semantic_rank']} "
+                  f"nll {r['semantic_nll']:.3f} | diverge @ {r['divergence_token_index']}")
+            print(f"      free-run {r['generated_text']!r}")
+
+    return stats
+
+
 def main():
     tok = Tokenizer.from_file(str(TOK_PATH))
 
     print("=" * 112)
-    print("Node 71 — semantic-token / exposure-bias diagnostic")
+    print("Node 71 - semantic-token / exposure-bias diagnostic")
     print("=" * 112)
     print("device:", DEVICE)
     if DEVICE.type == "cuda":
         print("GPU:", torch.cuda.get_device_name(0))
+    print(f"HELD-OUT probes: {len(PROBES_HELDOUT)}  (facts Node 69 never trains on)")
+    print(f"SEEN probes:     {len(PROBES_SEEN)}  (drawn from Node 69 training split)")
 
-    print("Loading Step 66...")
+    print("\nLoading Step 66 base...")
     step66 = load_model(STEP66)
-    print("Loading Step 69...")
-    step69 = load_model(STEP69)
+    print("Loading Step 69 (frozen head)...")
+    step69_frozen = load_model(STEP69_FROZEN)
+    print("Loading Step 69 (head trained)...")
+    step69_fixed = load_model(STEP69)
 
-    for name, model in [("Step 66 baseline", step66), ("Step 69 best SFT", step69)]:
-        results = []
-        print("\n" + "-" * 112)
+    models = [
+        ("Step 66 base", step66),
+        ("Step 69 frozen-head", step69_frozen),
+        ("Step 69 head-trained", step69_fixed),
+    ]
+
+    table = {}
+    for name, model in models:
+        print("\n" + "=" * 112)
         print(name)
+        print("=" * 112)
+        table[name] = {
+            "HELD-OUT": sweep(model, tok, PROBES_HELDOUT, "HELD-OUT"),
+            "SEEN": sweep(model, tok, PROBES_SEEN, "SEEN"),
+        }
 
-        for prompt, answer in PROBES:
-            results.append(diagnose(model, tok, prompt, answer))
+    width = 22
+    names = [n for n, _ in models]
 
-        sem = [r for r in results if r["semantic_rank"] is not None]
-        print(f"Mean format-first NLL: {sum(r['format_nll'] for r in results)/len(results):.4f}")
-        print(f"Format-first top1: {sum(r['format_rank'] == 1 for r in results)/len(results)*100:.1f}%")
-        print(f"Mean semantic-first NLL: {sum(r['semantic_nll'] for r in sem)/len(sem):.4f}")
-        print(f"Mean semantic-first rank: {sum(r['semantic_rank'] for r in sem)/len(sem):.1f}")
-        print(f"Semantic-first top1: {sum(r['semantic_rank'] == 1 for r in sem)/len(sem)*100:.1f}%")
-        valid_div = [r["divergence_token_index"] for r in results if r["divergence_token_index"] is not None]
-        print(f"Mean first free-run divergence token: {sum(valid_div)/len(valid_div):.1f}")
+    def grid(title, fmt, field, suffix=""):
+        print(f"\n{title}")
+        print(f"{'subset':10s}" + "".join(f"{n:>{width}s}" for n in names))
+        for key in ("HELD-OUT", "SEEN"):
+            cells = "".join(
+                f"{format(table[n][key][field], fmt) + suffix:>{width}s}" for n in names
+            )
+            print(f"{key:10s}" + cells)
 
-        for (prompt, answer), r in zip(PROBES, results):
-            print(f"\nUser: {prompt}")
-            print(f"Gold: {answer}")
-            print(f"Format first: {r['format_first']!r} | rank {r['format_rank']} | NLL {r['format_nll']:.4f}")
-            print(f"Semantic first: {r['semantic_token']!r} | rank {r['semantic_rank']} | NLL {r['semantic_nll']:.4f}")
-            print(f"First free-run divergence token: {r['divergence_token_index']}")
-            print(f"Free-run: {r['generated_text']!r}")
+    print("\n" + "=" * 112)
+    print("SUMMARY")
+    print("=" * 112)
+    grid("semantic-first rank (lower is better)", ".1f", "sem_rank")
+    grid("semantic-first top1", ".1f", "sem_top1", "%")
+    grid("format-first NLL", ".4f", "format_nll")
+    grid("mean first free-run divergence token (0 = wrong at the very first token)",
+         ".2f", "divergence")
+    grid("first generated token correct", ".1f", "any_token_correct", "%")
 
     print("\nNode 71 complete.")
 

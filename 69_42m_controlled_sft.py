@@ -9,15 +9,34 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tokenizers import Tokenizer
 
-# Load the exact QA data module directly from GitHub so Colab CLI does not
-# depend on the local WSL working directory.
+# Load the exact QA data module. Prefer a local copy next to this file; fall
+# back to GitHub raw at a pinned commit.
+#
+# The /<commit-sha>/ path form is the ONLY form GitHub actually pins. A
+# "?v=<sha>" query parameter is ignored, and raw.githubusercontent then serves
+# whatever is currently on main -- the pin is decorative. The previous version
+# of this file had both problems: a "?v=" URL and a sha ending ...213 instead
+# of the real ...214.
+QA_DATA_SHA = "d5fd2ec545b53ff0a7cc0b3d09bf447cc5358214"
 QA_DATA_URL = (
     "https://raw.githubusercontent.com/"
     "Randyren2024/transformers_exercise_20260911/"
-    "main/69_precision_data.py"
-    "?v=d5fd2ec545b53ff0a7cc0b3d09bf447cc5358213"
+    f"{QA_DATA_SHA}/69_precision_data.py"
 )
-qa_source = urllib.request.urlopen(QA_DATA_URL, timeout=60).read().decode("utf-8")
+
+try:
+    _local_qa = Path(__file__).resolve().parent / "69_precision_data.py"
+except NameError:  # exec'd without __file__
+    _local_qa = Path("69_precision_data.py")
+
+if _local_qa.exists():
+    qa_source = _local_qa.read_text(encoding="utf-8")
+    print(f"QA data: local {_local_qa}")
+else:
+    with urllib.request.urlopen(QA_DATA_URL, timeout=60) as _resp:
+        qa_source = _resp.read().decode("utf-8")
+    print(f"QA data: fetched {QA_DATA_SHA[:8]} from GitHub")
+
 qa_env = {"__name__": "precision_data_69"}
 exec(compile(qa_source, "69_precision_data.py", "exec"), qa_env)
 qa_groups = qa_env["qa_groups"]
@@ -321,11 +340,21 @@ def main():
     state = torch.load(BASE_CKPT, map_location="cpu", weights_only=True)
     model.load_state_dict(state["model_state_dict"])
 
-    # Freeze embeddings and the lower half of the transformer.
+    # Freeze the positional embedding and the lower half of the transformer.
     # This protects the pretrained language distribution while the upper
-    # layers learn instruction-response mapping.
-    for p in model.tok.parameters():
-        p.requires_grad_(False)
+    # layers learn the instruction-response mapping.
+    #
+    # The input embedding is deliberately NOT frozen. head.weight IS tok.weight
+    # (weight tying), so freezing tok also freezes the LM output projection,
+    # leaving the model unable to move probability mass onto answer tokens.
+    # That is what went wrong in the first Step 69 run: only 45% of the 42M
+    # parameters stayed trainable, held-out facts did not improve, and
+    # generation died at the first token. See RESULTS_node71_baseline.md.
+    assert model.head.weight is model.tok.weight, (
+        "weight tying was removed: 'freezing tok' no longer implies freezing "
+        "the LM head, so the freeze policy below needs revisiting"
+    )
+
     for p in model.pos.parameters():
         p.requires_grad_(False)
     for block in model.blocks[:6]:
@@ -335,6 +364,20 @@ def main():
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Trainable params: {trainable:,} / {total_params:,}")
+    print("Freeze map:")
+    for label, module in [
+        ("embedding (tied to head)", model.tok),
+        ("positional", model.pos),
+        ("blocks[0:6]", model.blocks[0]),
+        ("blocks[6:12]", model.blocks[6]),
+        ("ln_f", model.ln_f),
+    ]:
+        flags = {p.requires_grad for p in module.parameters()}
+        state = {True: "TRAINABLE", False: "FROZEN"}.get(
+            flags.pop() if len(flags) == 1 else None, "MIXED"
+        )
+        n = sum(p.numel() for p in module.parameters())
+        print(f"  {label:26s} {n:>12,}  {state}")
 
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
@@ -421,6 +464,9 @@ def main():
                             "context": CTX,
                         },
                         "frozen_blocks": 6,
+                        "frozen_embedding": False,
+                        "frozen_pos": True,
+                        "weight_tying": "tok<->head (tied, both trained)",
                     },
                     OUT_DIR / "tiny_gpt_v2_42m_sft_best.pt",
                 )
