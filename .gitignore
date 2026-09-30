@@ -5,3 +5,6 @@ __pycache__/
 
 # Model artifacts (see deployment/README.md)
 deployment/models/
+
+# Local scratch
+randyren/
